@@ -1,0 +1,10 @@
+digraph Dependencies {
+    rankdir=TB;
+    node [shape=box, style=filled, fillcolor=lightblue];
+    "N" [fillcolor=orange];
+    "N" -> "O";
+    "N" -> "P";
+    "O" -> "Q";
+    "P" -> "Q";
+    "P" -> "R";
+}

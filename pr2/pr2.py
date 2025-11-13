@@ -22,26 +22,47 @@ class ConfigFileNotFoundError(ConfigError):
         super().__init__(f"Config file not found: {config_path}")
 
 
-class InvalidConfigError(ConfigError):
-    def __init__(self, field, value, reason):
-        super().__init__(f"Invalid value '{value}' for field '{field}': {reason}")
-
-
-class MissingConfigFieldError(ConfigError):
-    def __init__(self, field):
-        super().__init__(f"Missing required config field: {field}")
-
-
 class CircularDependencyError(Exception):
     def __init__(self, package, path):
         super().__init__(f"Circular dependency: {' -> '.join(path + [package])}")
+
+
+class GraphvizVisualizer:
+    @staticmethod
+    def generate_dot_graph(dependency_graph, root_package, graph_type="dependencies"):
+        dot_lines = []
+        
+        if graph_type == "dependencies":
+            dot_lines.append("digraph Dependencies {")
+            dot_lines.append("    rankdir=TB;")
+            dot_lines.append("    node [shape=box, style=filled, fillcolor=lightblue];")
+            dot_lines.append(f'    "{root_package}" [fillcolor=orange];')
+        else:
+            dot_lines.append("digraph ReverseDependencies {")
+            dot_lines.append("    rankdir=BT;")
+            dot_lines.append("    node [shape=ellipse, style=filled, fillcolor=lightgreen];")
+            dot_lines.append(f'    "{root_package}" [fillcolor=yellow];')
+        
+        for package, dependencies in dependency_graph.items():
+            for dep in dependencies:
+                if graph_type == "dependencies":
+                    dot_lines.append(f'    "{package}" -> "{dep}";')
+                else:
+                    dot_lines.append(f'    "{dep}" -> "{package}";')
+        
+        dot_lines.append("}")
+        return "\n".join(dot_lines)
+    
+    @staticmethod
+    def save_dot_file(dot_content, filename):
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(dot_content)
 
 
 class DependencyAnalyzer:
     def __init__(self, test_mode=False):
         self.test_mode = test_mode
         
-        # Test data with packages A, B, C...
         self.test_dependencies = {
             "A": ["B", "C"],
             "B": ["D", "E"], 
@@ -52,21 +73,24 @@ class DependencyAnalyzer:
             "G": ["I"],
             "H": [],
             "I": [],
-            "J": ["A", "K"],  # J зависит от A (обратная зависимость для A)
-            "K": ["B"],       # K зависит от B (обратная зависимость для B)
-            "L": ["C", "M"],  # L зависит от C
-            "M": ["H"]        # M зависит от H
+            "J": ["A", "K"],
+            "K": ["B"],
+            "L": ["C", "M"],
+            "M": ["H"],
+            "N": ["O", "P"],
+            "O": ["Q"],
+            "P": ["Q", "R"],
+            "Q": [],
+            "R": []
         }
         
-        # Data with circular dependencies
         self.cyclic_dependencies = {
             "X": ["Y"],
             "Y": ["Z"], 
-            "Z": ["X"]  # Cycle: X->Y->Z->X
+            "Z": ["X"]
         }
     
     def get_complete_dependencies(self, package_name, use_cyclic=False):
-        """BFS with recursion to get complete dependency graph"""
         graph = self.cyclic_dependencies if use_cyclic else self.test_dependencies
         
         def bfs_recursive(pkg, visited=None, path=None):
@@ -75,7 +99,6 @@ class DependencyAnalyzer:
             if path is None:
                 path = []
             
-            # Check for circular dependency
             if pkg in path:
                 raise CircularDependencyError(pkg, path)
             
@@ -89,7 +112,6 @@ class DependencyAnalyzer:
             if pkg in graph:
                 for dep in graph[pkg]:
                     result[pkg].append(dep)
-                    # Recursive BFS call
                     sub_deps = bfs_recursive(dep, visited, current_path)
                     result.update(sub_deps)
             
@@ -101,7 +123,6 @@ class DependencyAnalyzer:
             raise e
     
     def get_all_transitive_deps(self, package_name):
-        """Get all transitive dependencies using BFS"""
         if package_name not in self.test_dependencies:
             return []
         
@@ -124,10 +145,8 @@ class DependencyAnalyzer:
         return list(all_deps)
     
     def get_reverse_dependencies(self, package_name):
-        """Stage 4: Get reverse dependencies - packages that depend on given package"""
         reverse_deps = set()
         
-        # Build reverse dependency graph
         reverse_graph = {}
         for package, dependencies in self.test_dependencies.items():
             for dep in dependencies:
@@ -135,7 +154,6 @@ class DependencyAnalyzer:
                     reverse_graph[dep] = []
                 reverse_graph[dep].append(package)
         
-        # Use BFS to find all reverse dependencies (transitive)
         if package_name in reverse_graph:
             visited = set()
             queue = deque([package_name])
@@ -155,8 +173,6 @@ class DependencyAnalyzer:
         return list(reverse_deps)
     
     def get_all_reverse_dependencies(self, package_name):
-        """Get complete reverse dependency graph using BFS with recursion"""
-        # Build reverse dependency graph
         reverse_graph = {}
         for package, dependencies in self.test_dependencies.items():
             for dep in dependencies:
@@ -170,7 +186,6 @@ class DependencyAnalyzer:
             if path is None:
                 path = []
             
-            # Check for circular dependency in reverse graph
             if pkg in path:
                 raise CircularDependencyError(pkg, path)
             
@@ -184,7 +199,6 @@ class DependencyAnalyzer:
             if pkg in reverse_graph:
                 for reverse_dep in reverse_graph[pkg]:
                     result[pkg].append(reverse_dep)
-                    # Recursive BFS call for reverse dependencies
                     sub_deps = reverse_bfs_recursive(reverse_dep, visited, current_path)
                     result.update(sub_deps)
             
@@ -227,7 +241,8 @@ class Config:
         self.repository_url = ""
         self.test_repository_mode = False
         self.ascii_tree_output = False
-        self.reverse_dependencies_mode = False  # New for stage 4
+        self.reverse_dependencies_mode = False
+        self.graphviz_output = False
         self._load_config()
     
     def _load_config(self):
@@ -241,8 +256,8 @@ class Config:
         self.repository_url = config_data['repository_url']
         self.test_repository_mode = config_data['test_repository_mode']
         self.ascii_tree_output = config_data['ascii_tree_output']
-        # Stage 4: Add reverse dependencies mode (default to false if not present)
         self.reverse_dependencies_mode = config_data.get('reverse_dependencies_mode', False)
+        self.graphviz_output = config_data.get('graphviz_output', False)
     
     def display_parameters(self):
         print("=== Configuration Parameters ===")
@@ -251,16 +266,18 @@ class Config:
         print(f"test_repository_mode: {self.test_repository_mode}")
         print(f"ascii_tree_output: {self.ascii_tree_output}")
         print(f"reverse_dependencies_mode: {self.reverse_dependencies_mode}")
+        print(f"graphviz_output: {self.graphviz_output}")
         print("================================")
 
 
 def create_sample_config():
     config_content = """# Dependency analyzer configuration
-package_name = "H"
+package_name = "A"
 repository_url = ""
 test_repository_mode = true
 ascii_tree_output = true
-reverse_dependencies_mode = true
+reverse_dependencies_mode = false
+graphviz_output = true
 """
     with open("config.toml", "w", encoding="utf-8") as f:
         f.write(config_content)
@@ -270,8 +287,7 @@ reverse_dependencies_mode = true
 def main():
     parser = argparse.ArgumentParser(description='Dependency Graph Visualizer')
     parser.add_argument('--config', '-c', default='config.toml')
-    parser.add_argument('--create-sample', action='store_true', 
-                       help='Create sample config file')
+    parser.add_argument('--create-sample', action='store_true')
     
     args = parser.parse_args()
     
@@ -285,75 +301,71 @@ def main():
         
         print(f"\nAnalyzing package: {config.package_name}")
         print(f"Test mode: {'enabled' if config.test_repository_mode else 'disabled'}")
-        print(f"Reverse dependencies mode: {'enabled' if config.reverse_dependencies_mode else 'disabled'}")
+        print(f"Reverse dependencies: {'enabled' if config.reverse_dependencies_mode else 'disabled'}")
+        print(f"Graphviz output: {'enabled' if config.graphviz_output else 'disabled'}")
         
         analyzer = DependencyAnalyzer(test_mode=config.test_repository_mode)
+        graphviz = GraphvizVisualizer()
         
-        # Stage 3: Complete dependency analysis
         if not config.reverse_dependencies_mode:
-            print(f"\n=== Stage 3: Complete Dependency Analysis ===")
+            print(f"\n=== Dependency Analysis ===")
             
-            print(f"\nComplete dependency graph for '{config.package_name}':")
             try:
                 complete_graph = analyzer.get_complete_dependencies(config.package_name)
+                print(f"\nComplete dependency graph for '{config.package_name}':")
                 for pkg, deps in complete_graph.items():
                     print(f"  {pkg}: {deps}")
+                
+                transitive_deps = analyzer.get_all_transitive_deps(config.package_name)
+                print(f"\nAll transitive dependencies ({len(transitive_deps)}):")
+                for i, dep in enumerate(transitive_deps, 1):
+                    print(f"  {i}. {dep}")
+                
+                if config.ascii_tree_output:
+                    print(f"\n=== ASCII Tree ===")
+                    tree = ASCIIVisualizer.generate_tree(complete_graph, config.package_name)
+                    print(tree)
+                
+                if config.graphviz_output:
+                    print(f"\n=== Graphviz DOT Code ===")
+                    dot_content = graphviz.generate_dot_graph(complete_graph, config.package_name, "dependencies")
+                    dot_filename = f"{config.package_name}_dependencies.dot"
+                    graphviz.save_dot_file(dot_content, dot_filename)
+                    print("DOT code generated successfully")
+                    
             except CircularDependencyError as e:
                 print(f"  ERROR: {e}")
-            
-            # Get transitive dependencies
-            transitive_deps = analyzer.get_all_transitive_deps(config.package_name)
-            print(f"\nAll transitive dependencies ({len(transitive_deps)}):")
-            for i, dep in enumerate(transitive_deps, 1):
-                print(f"  {i}. {dep}")
-            
-            # ASCII tree visualization
-            if config.ascii_tree_output:
-                print(f"\n=== ASCII Tree ===")
-                try:
-                    tree = ASCIIVisualizer.generate_tree(
-                        analyzer.get_complete_dependencies(config.package_name), 
-                        config.package_name
-                    )
-                    print(tree)
-                except CircularDependencyError:
-                    print("Cannot generate tree - circular dependencies detected")
         
-        # Stage 4: Reverse dependencies
-        if config.reverse_dependencies_mode:
-            print(f"\n=== Stage 4: Reverse Dependencies Analysis ===")
+        else:
+            print(f"\n=== Reverse Dependencies ===")
             
-            # Get direct reverse dependencies
             reverse_deps = analyzer.get_reverse_dependencies(config.package_name)
             print(f"\nDirect reverse dependencies for '{config.package_name}':")
             if reverse_deps:
                 for i, dep in enumerate(reverse_deps, 1):
                     print(f"  {i}. {dep}")
-            else:
-                print("  No direct reverse dependencies found")
             
-            # Get complete reverse dependency graph
-            print(f"\nComplete reverse dependency graph for '{config.package_name}':")
             try:
                 reverse_graph = analyzer.get_all_reverse_dependencies(config.package_name)
+                print(f"\nComplete reverse dependency graph for '{config.package_name}':")
                 for pkg, deps in reverse_graph.items():
                     print(f"  {pkg}: {deps}")
+                
+                if config.ascii_tree_output:
+                    print(f"\n=== Reverse ASCII Tree ===")
+                    reverse_tree = ASCIIVisualizer.generate_tree(reverse_graph, config.package_name)
+                    print(reverse_tree)
+                
+                if config.graphviz_output:
+                    print(f"\n=== Reverse Graphviz DOT Code ===")
+                    dot_content = graphviz.generate_dot_graph(reverse_graph, config.package_name, "reverse")
+                    dot_filename = f"{config.package_name}_reverse.dot"
+                    graphviz.save_dot_file(dot_content, dot_filename)
+                    print("DOT code generated successfully")
+                    
             except CircularDependencyError as e:
                 print(f"  ERROR: {e}")
-            
-            # ASCII tree for reverse dependencies
-            if config.ascii_tree_output:
-                print(f"\n=== Reverse Dependencies ASCII Tree ===")
-                try:
-                    reverse_tree = ASCIIVisualizer.generate_tree(
-                        analyzer.get_all_reverse_dependencies(config.package_name), 
-                        config.package_name
-                    )
-                    print(reverse_tree)
-                except CircularDependencyError:
-                    print("Cannot generate reverse tree - circular dependencies detected")
         
-        # Demonstrate circular dependency handling
         print(f"\n=== Circular Dependency Test ===")
         try:
             analyzer.get_complete_dependencies("X", use_cyclic=True)
@@ -361,13 +373,24 @@ def main():
         except CircularDependencyError as e:
             print(f"✓ Correctly detected: {e}")
             
-        # Stage 4: Demonstrate reverse dependencies for different packages
-        if config.test_repository_mode:
-            print(f"\n=== Stage 4: Reverse Dependencies Examples ===")
-            test_packages = ["H", "B", "C", "I"]
-            for test_pkg in test_packages:
-                reverse_deps = analyzer.get_reverse_dependencies(test_pkg)
-                print(f"\nReverse dependencies for '{test_pkg}' ({len(reverse_deps)}): {reverse_deps}")
+        print(f"\n=== Stage 5: Graphviz DOT Examples ===")
+        demo_packages = ["A", "H", "N"]
+        for pkg in demo_packages:
+            if pkg != config.package_name:
+                try:
+                    demo_graph = analyzer.get_complete_dependencies(pkg)
+                    dot_content = graphviz.generate_dot_graph(demo_graph, pkg, "dependencies")
+                    dot_filename = f"{pkg}_demo.dot"
+                    graphviz.save_dot_file(dot_content, dot_filename)
+                    print(f"Generated DOT for package: {pkg}")
+                except CircularDependencyError:
+                    pass
+        
+        print(f"\n=== Comparison with APT ===")
+        print("Our tool vs APT:")
+        print("- Our tool: Complete transitive dependency graph")
+        print("- APT: Direct dependencies only")
+        print("- Differences: Test data vs real packages")
             
     except Exception as e:
         print(f"ERROR: {e}")
