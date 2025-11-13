@@ -1,0 +1,5 @@
+
+package_name = "nginx"
+repository_url = "http://archive.ubuntu.com/ubuntu"
+test_repository_mode = true
+ascii_tree_output = true
