@@ -24,7 +24,9 @@
     <Compile Include="pr2.py" />
   </ItemGroup>
   <ItemGroup>
+    <Content Include="cofig3.toml" />
     <Content Include="config.toml" />
+    <Content Include="config2.toml" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in

@@ -1,8 +1,9 @@
-# -*- coding: utf-8 -*-
+п»ї# -*- coding: utf-8 -*-
 
 import os
 import sys
 import argparse
+from collections import deque
 
 try:
     import toml
@@ -21,51 +22,116 @@ class ConfigFileNotFoundError(ConfigError):
         super().__init__(f"Config file not found: {config_path}")
 
 
-class InvalidConfigError(ConfigError):
-    def __init__(self, field, value, reason):
-        super().__init__(f"Invalid value '{value}' for field '{field}': {reason}")
-
-
-class MissingConfigFieldError(ConfigError):
-    def __init__(self, field):
-        super().__init__(f"Missing required config field: {field}")
+class CircularDependencyError(Exception):
+    def __init__(self, package, path):
+        super().__init__(f"Circular dependency: {' -> '.join(path + [package])}")
 
 
 class DependencyAnalyzer:
-    
     def __init__(self, test_mode=False):
         self.test_mode = test_mode
-    
-    def get_package_dependencies(self, package_name):
-        # В тестовом режиме возвращаем пример зависимостей
-        # Это демонстрационные данные для этапа 2
-        test_dependencies = {
-            "nginx": [
-                "libc6", "libpcre3", "zlib1g", "libssl3", 
-                "adduser", "libnginx-mod-http-geoip2"
-            ],
-            "curl": [
-                "libc6", "libcurl4", "libidn2-0", "libpsl5", 
-                "libssl3", "zlib1g"
-            ],
-            "python3": [
-                "libc6", "libpython3-stdlib", "python3-minimal",
-                "libexpat1", "libssl3", "zlib1g"
-            ],
-            "git": [
-                "libc6", "libcurl4", "liberror-perl", "libexpat1",
-                "libpcre2-8-0", "zlib1g"
-            ]
+        
+        # Test data with packages A, B, C...
+        self.test_dependencies = {
+            "A": ["B", "C"],
+            "B": ["D", "E"], 
+            "C": ["F", "G"],
+            "D": ["H"],
+            "E": ["H", "I"],
+            "F": [],
+            "G": ["I"],
+            "H": [],
+            "I": []
         }
         
-        if self.test_mode:
-            # В тестовом режиме возвращаем зависимости для известных пакетов
-            # или пустой список для неизвестных
-            return test_dependencies.get(package_name, [])
-        else:
-            # В реальном режиме здесь была бы логика работы с репозиторием Ubuntu
-            # Но так как его нет, возвращаем тестовые данные
-            return test_dependencies.get(package_name, [])
+        # Data with circular dependencies
+        self.cyclic_dependencies = {
+            "X": ["Y"],
+            "Y": ["Z"], 
+            "Z": ["X"]  # Cycle: X->Y->Z->X
+        }
+    
+    def get_complete_dependencies(self, package_name, use_cyclic=False):
+        """BFS with recursion to get complete dependency graph"""
+        graph = self.cyclic_dependencies if use_cyclic else self.test_dependencies
+        
+        def bfs_recursive(pkg, visited=None, path=None):
+            if visited is None:
+                visited = set()
+            if path is None:
+                path = []
+            
+            # Check for circular dependency
+            if pkg in path:
+                raise CircularDependencyError(pkg, path)
+            
+            if pkg in visited:
+                return {}
+            
+            visited.add(pkg)
+            current_path = path + [pkg]
+            
+            result = {pkg: []}
+            if pkg in graph:
+                for dep in graph[pkg]:
+                    result[pkg].append(dep)
+                    # Recursive BFS call
+                    sub_deps = bfs_recursive(dep, visited, current_path)
+                    result.update(sub_deps)
+            
+            return result
+        
+        try:
+            return bfs_recursive(package_name)
+        except CircularDependencyError as e:
+            raise e
+    
+    def get_all_transitive_deps(self, package_name):
+        """Get all transitive dependencies using BFS"""
+        if package_name not in self.test_dependencies:
+            return []
+        
+        visited = set()
+        queue = deque([package_name])
+        all_deps = set()
+        
+        while queue:
+            current = queue.popleft()
+            if current in visited:
+                continue
+            visited.add(current)
+            
+            if current in self.test_dependencies:
+                for dep in self.test_dependencies[current]:
+                    if dep not in visited:
+                        all_deps.add(dep)
+                        queue.append(dep)
+        
+        return list(all_deps)
+
+
+class ASCIIVisualizer:
+    @staticmethod
+    def generate_tree(dependency_graph, root):
+        if root not in dependency_graph:
+            return root
+        
+        def build_tree(pkg, prefix="", is_last=True):
+            result = []
+            connector = "в””в”Ђв”Ђ " if is_last else "в”њв”Ђв”Ђ "
+            result.append(prefix + connector + pkg)
+            
+            if pkg in dependency_graph and dependency_graph[pkg]:
+                children = dependency_graph[pkg]
+                new_prefix = prefix + ("    " if is_last else "в”‚   ")
+                
+                for i, child in enumerate(children):
+                    is_last_child = (i == len(children) - 1)
+                    result.extend(build_tree(child, new_prefix, is_last_child))
+            
+            return result
+        
+        return "\n".join(build_tree(root))
 
 
 class Config:
@@ -81,128 +147,78 @@ class Config:
         if not os.path.exists(self.config_path):
             raise ConfigFileNotFoundError(self.config_path)
         
-        try:
-            with open(self.config_path, 'r', encoding='utf-8') as f:
-                config_data = toml.load(f)
-        except toml.TomlDecodeError as e:
-            raise ConfigError(f"TOML parsing error: {e}")
-        except Exception as e:
-            raise ConfigError(f"Config file reading error: {e}")
-        
-        self._validate_and_load(config_data)
-    
-    def _validate_and_load(self, config_data):
-        if 'package_name' not in config_data:
-            raise MissingConfigFieldError('package_name')
+        with open(self.config_path, 'r', encoding='utf-8') as f:
+            config_data = toml.load(f)
         
         self.package_name = config_data['package_name']
-        if not isinstance(self.package_name, str) or not self.package_name.strip():
-            raise InvalidConfigError('package_name', self.package_name, "must be non-empty string")
-        
-        if 'repository_url' not in config_data:
-            raise MissingConfigFieldError('repository_url')
-        
         self.repository_url = config_data['repository_url']
-        if not isinstance(self.repository_url, str) or not self.repository_url.strip():
-            raise InvalidConfigError('repository_url', self.repository_url, "must be non-empty string")
-        
-        if 'test_repository_mode' not in config_data:
-            raise MissingConfigFieldError('test_repository_mode')
-        
-        test_mode = config_data['test_repository_mode']
-        if not isinstance(test_mode, bool):
-            raise InvalidConfigError('test_repository_mode', test_mode, "must be boolean value")
-        self.test_repository_mode = test_mode
-        
-        if 'ascii_tree_output' not in config_data:
-            raise MissingConfigFieldError('ascii_tree_output')
-        
-        ascii_output = config_data['ascii_tree_output']
-        if not isinstance(ascii_output, bool):
-            raise InvalidConfigError('ascii_tree_output', ascii_output, "must be boolean value")
-        self.ascii_tree_output = ascii_output
-    
-    def get_all_parameters(self):
-        return {
-            'package_name': self.package_name,
-            'repository_url': self.repository_url,
-            'test_repository_mode': self.test_repository_mode,
-            'ascii_tree_output': self.ascii_tree_output
-        }
+        self.test_repository_mode = config_data['test_repository_mode']
+        self.ascii_tree_output = config_data['ascii_tree_output']
     
     def display_parameters(self):
-        params = self.get_all_parameters()
         print("=== Configuration Parameters ===")
-        for key, value in params.items():
-            print(f"{key}: {value}")
+        print(f"package_name: {self.package_name}")
+        print(f"repository_url: {self.repository_url}")
+        print(f"test_repository_mode: {self.test_repository_mode}")
+        print(f"ascii_tree_output: {self.ascii_tree_output}")
         print("================================")
 
 
-def create_sample_config():
-    config_content = """# Dependency analyzer configuration
-package_name = "nginx"
-repository_url = "http://archive.ubuntu.com/ubuntu"
-test_repository_mode = true
-ascii_tree_output = true
-"""
-    with open("config.toml", "w", encoding="utf-8") as f:
-        f.write(config_content)
-    print("Created sample config file: config.toml")
-
-
 def main():
-    parser = argparse.ArgumentParser(description='Package dependency graph visualizer')
-    parser.add_argument('--config', '-c', default='config.toml',
-                       help='Path to config file (default: config.toml)')
-    parser.add_argument('--create-sample', action='store_true',
-                       help='Create sample config file')
+    parser = argparse.ArgumentParser(description='Dependency Graph Visualizer')
+    parser.add_argument('--config', '-c', default='config.toml')
     
     args = parser.parse_args()
     
-    if args.create_sample:
-        create_sample_config()
-        return
-    
     try:
         config = Config(args.config)
-        
         config.display_parameters()
         
         print(f"\nAnalyzing package: {config.package_name}")
-        print(f"Source: {config.repository_url}")
         print(f"Test mode: {'enabled' if config.test_repository_mode else 'disabled'}")
-        print(f"Output format: {'ASCII tree' if config.ascii_tree_output else 'standard'}")
         
-        # Этап 2: Получение зависимостей
-        print(f"\n=== Stage 2: Dependency Analysis ===")
+        # Stage 3: Complete dependency analysis
+        print(f"\n=== Stage 3: Complete Dependency Analysis ===")
         
         analyzer = DependencyAnalyzer(test_mode=config.test_repository_mode)
-        dependencies = analyzer.get_package_dependencies(config.package_name)
         
-        print(f"\nDirect dependencies for package '{config.package_name}':")
-        if dependencies:
-            for i, dep in enumerate(dependencies, 1):
-                print(f"{i}. {dep}")
-        else:
-            print("No direct dependencies found.")
+        # Get complete dependency graph
+        print(f"\nComplete dependency graph for '{config.package_name}':")
+        try:
+            complete_graph = analyzer.get_complete_dependencies(config.package_name)
+            for pkg, deps in complete_graph.items():
+                print(f"  {pkg}: {deps}")
+        except CircularDependencyError as e:
+            print(f"  ERROR: {e}")
         
-        print(f"\nTotal direct dependencies: {len(dependencies)}")
+        # Get transitive dependencies
+        transitive_deps = analyzer.get_all_transitive_deps(config.package_name)
+        print(f"\nAll transitive dependencies ({len(transitive_deps)}):")
+        for i, dep in enumerate(transitive_deps, 1):
+            print(f"  {i}. {dep}")
         
-    except ConfigFileNotFoundError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        print("\nTip: use --create-sample to create sample config")
-        sys.exit(1)
-    except MissingConfigFieldError as e:
-        print(f"CONFIG ERROR: {e}", file=sys.stderr)
-        sys.exit(1)
-    except InvalidConfigError as e:
-        print(f"CONFIG ERROR: {e}", file=sys.stderr)
-        sys.exit(1)
-    except ConfigError as e:
-        print(f"CONFIG ERROR: {e}", file=sys.stderr)
-        sys.exit(1)
+        # ASCII tree visualization
+        if config.ascii_tree_output:
+            print(f"\n=== ASCII Tree ===")
+            try:
+                tree = ASCIIVisualizer.generate_tree(
+                    analyzer.get_complete_dependencies(config.package_name), 
+                    config.package_name
+                )
+                print(tree)
+            except CircularDependencyError:
+                print("Cannot generate tree - circular dependencies detected")
+        
+        # Demonstrate circular dependency handling
+        print(f"\n=== Circular Dependency Test ===")
+        try:
+            analyzer.get_complete_dependencies("X", use_cyclic=True)
+            print("ERROR: Circular dependency not detected!")
+        except CircularDependencyError as e:
+            print(f"вњ“ Correctly detected: {e}")
+            
     except Exception as e:
-        print(f"UNKNOWN ERROR: {e}", file=sys.stderr)
+        print(f"ERROR: {e}")
         sys.exit(1)
 
 
