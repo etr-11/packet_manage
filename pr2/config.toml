@@ -1,0 +1,4 @@
+package_name = "example-package"
+repository_url = "https://github.com/example/repo"
+test_repository_mode = false
+ascii_tree_output = true
